@@ -1,0 +1,14 @@
+[Unit]
+Description=NVRConnector daemon
+After=network.target
+
+[Service]
+ExecStart=/bin/sh /opt/nvrconn/bin/start.sh
+Restart=on-failure
+RestartSec=5
+Type=forking
+
+[Install]
+WantedBy=multi-user.target
+Alias=nvrconn.service
+

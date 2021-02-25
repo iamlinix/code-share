@@ -1,0 +1,268 @@
+package orm
+
+import (
+	"fmt"
+	"time"
+
+	"../common"
+
+	"go.uber.org/zap"
+	_ "github.com/go-sql-driver/mysql"
+	"database/sql"
+	"encoding/json"
+	"encoding/base64"
+)
+
+
+func ParsePriceZoneCfg(ccode string) (string, error) {
+
+	var pzc common.PriceZoneCfg
+	var zi common.ZoneInfo
+	var cmd string
+
+	pzc, find, err := GetPriceZoneCfgByClass(ccode)
+	if err != nil {
+		zaps.Error("get price zone cfg error: ", err)
+		return "", err
+	}
+
+	if find != true {
+		pzc, find, err = GetPriceZoneCfgByClass(common.PRICE_ZONE_DEFAULT)
+		if err != nil || find != true {
+			cmd = "WHEN a.unit_price >= 0 AND a.unit_price < 5 THEN '0.00-5.00'" +
+			"WHEN a.unit_price >= 5 AND a.unit_price < 10 THEN '5.00-10.00'" +
+			"WHEN a.unit_price >= 10 AND a.unit_price < 15 THEN '10.00-15.00'" +
+			"WHEN a.unit_price >= 15 AND a.unit_price < 20 THEN '15.00-20.00'" +
+			"WHEN a.unit_price >= 20 AND a.unit_price < 25 THEN '20.00-25.00'" +
+			"WHEN a.unit_price >= 25 AND a.unit_price < 30 THEN '25.00-30.00'" +
+			"WHEN a.unit_price >= 30 AND a.unit_price < 35 THEN '30.00-35.00'" +
+			"WHEN a.unit_price >= 35 AND a.unit_price < 40 THEN '35.00-40.00'" +
+			"WHEN a.unit_price >= 40 AND a.unit_price < 45 THEN '40.00-45.00'" +
+			"WHEN a.unit_price >= 45 AND a.unit_price < 50 THEN '45.00-50.00'" +
+			"WHEN a.unit_price >= 50 THEN '>=50.00'"
+			zaps.Warn("using interval default config")
+			return cmd, nil
+		}
+
+		zaps.Warn("using db default config")
+	}
+
+	jsonStr, err := base64.StdEncoding.DecodeString(pzc.Zones)
+
+	json.Unmarshal(jsonStr, &zi)
+
+	zaps.Info("price zone count: ", zi.Count)
+
+	for _, v := range zi.Values {
+		var sql string
+		if v.End == common.PRICE_ZONE_END {
+			sql = fmt.Sprintf("WHEN a.unit_price >= %.2f THEN '>=%.2f' ",
+					v.Begin, v.Begin)
+		} else {
+			sql = fmt.Sprintf("WHEN a.unit_price >= %.2f AND a.unit_price < %.2f " +
+					"THEN '%.2f-%.2f' ", v.Begin, v.End, v.Begin, v.End)
+		}
+		cmd = cmd + sql
+	}
+
+	zaps.Debug("zone cmd: ", cmd)
+
+	return cmd, nil
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// price-zone
+
+
+func GetPriceZone(fr common.FilterReq) ([]common.PriceZoneInfo, int, error) {
+
+	var pzList []common.PriceZoneInfo
+	var sqlcmd string
+	var rows *sql.Rows
+	var count int
+
+	zaps.Info(">>> get price-zone list")
+
+	code, _, err := common.GetClassInfo(fr.ClassLevel)
+	if err != nil {
+		zaps.Errorf("get class info failed: %v", err)
+		return pzList, 0, err
+	}
+
+	sqla := "t.section, SUM(t.inv_qty) as SALECOUNT, " +
+		"SUM(t.gross_val) AS SALEINCOME, SUM(t.netval_inv) AS SUMNET, "+
+		"SUM(t.cost) AS SUMCOST"
+	sqlb := "SELECT a.gross_val, a.inv_qty, a.netval_inv, a.cost, " +
+		"CASE "
+
+	sqlc, err := ParsePriceZoneCfg(fr.ClassCode)
+	if err != nil {
+		zaps.Error("parse price zone error: ", err)
+		return pzList, 0, err
+	}
+
+	sqld := "END AS section " +
+		"FROM bill_zsd a force index(idx_calday) " +
+		"LEFT OUTER JOIN material b ON a.material = b.material " +
+		"LEFT OUTER JOIN zaplant c ON a.plant = c.bic_zaplant "
+	sqle := fmt.Sprintf("WHERE a.calday >= '%s' AND a.calday <= '%s'",
+			fr.BeginDate, fr.EndDate)
+	sqlf1:= fmt.Sprintf("AND c.bic_zrpa_lcit = '%s'", fr.OrgCode)
+	sqlf2:= fmt.Sprintf("AND a.plant = '%s'", fr.OrgCode)
+	sqlg := fmt.Sprintf("AND b.%s = %s", code, fr.ClassCode)
+	sqlh := "t.section ORDER BY SALECOUNT DESC"
+
+	if fr.OrgLevel == common.ORG_LEVEL_HEAD {
+		sqlcmd = fmt.Sprintf("SELECT %s FROM(%s %s %s %s %s) as t GROUP BY %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlg, sqlh)
+	} else if fr.OrgLevel == common.ORG_LEVEL_BRANCH {
+		sqlcmd = fmt.Sprintf("SELECT %s FROM(%s %s %s %s %s %s) as t GROUP BY %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlf1, sqlg, sqlh)
+	} else if fr.OrgLevel == common.ORG_LEVEL_PLANT {
+		sqlcmd = fmt.Sprintf("SELECT %s FROM(%s %s %s %s %s %s) as t GROUP BY %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlf2, sqlg, sqlh)
+	}
+
+	zaps.Info("sql cmd: ", sqlcmd)
+	t1 := time.Now().UnixNano() / 1e6
+
+	rows, err = db.Query(sqlcmd)
+	if err != nil {
+		zaps.Error("db query failed: ", err)
+		return pzList, 0, err
+	}
+
+	t2 := time.Now().UnixNano() / 1e6
+	zaps.Infof("db query using %d ms", (t2 - t1))
+
+	defer rows.Close()
+
+	for rows.Next() {
+		var zp common.PriceZoneInfo
+		err := rows.Scan(&zp.PriceZone, &zp.SalesCount, &zp.SalesIncome,
+				&zp.SalesNet, &zp.SalesCost)
+		if err != nil {
+			zaps.Error("query error: ", err)
+		} else {
+			zaps.Debug(">>> PriceZone: ", zp.PriceZone)
+			zaps.Debug(">>> SalesCount: ", zp.SalesCount)
+			zaps.Debug(">>> SalesIncome: ", zp.SalesIncome)
+			zaps.Debug(">>> SalesNet: ", zp.SalesNet)
+			zaps.Debug(">>> SalesCost: ", zp.SalesCost)
+
+			pzList = append(pzList, zp)
+			count++
+		}
+	}
+
+	err = rows.Err()
+	if err != nil {
+		zaps.Error("query row error: ", err)
+		return pzList, count, err
+	}
+
+	zaps.Info("<<< get price-zone done with count ", count)
+
+	return pzList, count, err
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// price zone rank
+
+func GetPriceZoneRank(fr common.FilterReq) ([]common.MatlRankInfo, int, error) {
+
+	var mList []common.MatlRankInfo
+	var sqlcmd string
+	var rows *sql.Rows
+	var count int
+
+	zaps.Info(">>> get price-zone rank list")
+
+	code, _, err := common.GetClassInfo(fr.ClassLevel)
+	if err != nil {
+		zaps.Errorf("get class info failed: %v", err)
+		return mList, 0, err
+	}
+
+	sqla := "SELECT t.material, t.materialtxt, SUM(t.inv_qty) as SALECOUNT, " +
+		"SUM(t.gross_val) AS SALEINCOME, SUM(t.netval_inv) AS SUMNET, " +
+		"SUM(t.cost) AS SUMCOST FROM "
+	sqlb := "SELECT a.material, b.materialtxt, a.gross_val, a.inv_qty, " +
+		"a.unit_price, a.netval_inv, a.cost, " +
+		"a.zlsjg, b.bic_zklad2, b.zklad2txt, b.bic_zklasse_d, " +
+		"b.zklasse_dtxt, b.bic_zrpa_mtl, b.zrpa_mtltxt, " +
+		"c.bic_zrpa_lcit, " +
+		"CASE "
+
+	sqlc, err := ParsePriceZoneCfg(fr.ClassCode)
+	if err != nil {
+		zaps.Error("parse price zone error: ", err)
+		return mList, 0, err
+	}
+
+	sqld := "END AS section " +
+		"FROM bill_zsd a force index(idx_calday) " +
+		"LEFT OUTER JOIN material b ON a.material = b.material " +
+		"LEFT OUTER JOIN zaplant c ON a.plant = c.bic_zaplant "
+	sqle := fmt.Sprintf("WHERE a.calday >= '%s' AND a.calday <= '%s'",
+			fr.BeginDate, fr.EndDate)
+	sqlf1:= fmt.Sprintf("AND c.bic_zrpa_lcit = '%s'", fr.OrgCode)
+	sqlf2:= fmt.Sprintf("AND a.plant = '%s'", fr.OrgCode)
+	sqlg := fmt.Sprintf("AND b.%s = %s", code, fr.ClassCode)
+	sqlh := fmt.Sprintf("WHERE t.section = '%s' ", fr.ZoneTxt)
+	sqli := "GROUP BY t.material ORDER BY SALECOUNT DESC LIMIT 10"
+
+	if fr.OrgLevel == common.ORG_LEVEL_HEAD {
+		sqlcmd = fmt.Sprintf("%s(%s %s %s %s %s) as t %s %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlg, sqlh, sqli)
+	} else if fr.OrgLevel == common.ORG_LEVEL_BRANCH {
+		sqlcmd = fmt.Sprintf("%s(%s %s %s %s %s %s) as t %s %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlf1, sqlg, sqlh, sqli)
+	} else if fr.OrgLevel == common.ORG_LEVEL_PLANT {
+		sqlcmd = fmt.Sprintf("%s(%s %s %s %s %s %s) as t %s %s",
+			sqla, sqlb, sqlc, sqld, sqle, sqlf2, sqlg, sqlh, sqli)
+	}
+
+	zaps.Info("sql cmd: ", sqlcmd)
+	rows, err = db.Query(sqlcmd)
+
+	if err != nil {
+		zaps.Error("db query failed: ", err)
+		return mList, 0, err
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		var mr common.MatlRankInfo
+		err := rows.Scan(&mr.Material, &mr.MaterialTxt, &mr.SalesCount,
+				&mr.SalesIncome, &mr.SalesNet, &mr.SalesCost)
+		if err != nil {
+			zaps.Error("query error: ", err)
+		} else {
+			zaps.Debug(">>> Material: ", mr.Material)
+			zaps.Debug(">>> MaterialTxt: ", mr.MaterialTxt)
+			zaps.Debug(">>> SalesCount: ", mr.SalesCount)
+			zaps.Debug(">>> SalesIncome: ", mr.SalesIncome)
+			zaps.Debug(">>> SalesNet: ", mr.SalesNet)
+			zaps.Debug(">>> SalesCost: ", mr.SalesCost)
+
+			mList = append(mList, mr)
+			count++
+		}
+	}
+
+	err = rows.Err()
+	if err != nil {
+		zaps.Error("query row error: ", err)
+		return mList, 0, err
+	}
+
+	zaps.Infof("<<< get price-zone rank done with count (%d)", count)
+
+	return mList, count, err
+}
+
+

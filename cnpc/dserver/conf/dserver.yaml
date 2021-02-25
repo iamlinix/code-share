@@ -1,0 +1,30 @@
+server:
+  bind: 0.0.0.0
+  port: 8199
+  port2: 8198
+  wto: 15
+  rto: 15
+  ssl:
+    enable: true
+    cert: ./conf/cert.pem
+    key: ./conf/key.pem
+  auth:
+    web: false
+log:
+  path: /var/log/dserver.log
+  path2:
+    info: /var/log/dserver-info.log
+    warn: /var/log/dserver-warn.log
+    error: /var/log/dserver-error.log
+    fatal: /var/log/dserver-fatal.log
+  level: INFO
+database:
+  driver: mysql
+  address: 192.168.31.189
+  port: 3306
+  database: cnpc
+  username: cnpc
+  password: qwer1234
+dist:
+  path: /opt/dserver/dist
+pid: /tmp/dserver.pid

@@ -1,0 +1,57 @@
+mode: release
+log:
+  app:
+    path: logs/app.log
+    level: INFO
+  access:
+    path: logs/access.log
+    level: INFO
+database:
+  backend: 2
+  driver: mysql
+  database: dRlnbg==
+  username: cjMYKmlKZQk=
+  password: cgZFMG5hHU1Ac3QK
+  extras:
+    charset: utf8mb4
+  pool:
+    maxIdle: 1
+    maxOpen: 1
+    maxLife: 600
+fs:
+  backend: 1
+  base_dir: ./
+  extras:
+    clear_interval: 600
+    max_cache: 1024
+    cache_life: 86400
+web:
+  bind: 0.0.0.0
+  port: 10086
+  cors: true
+  wto: 600
+  rto: 600
+  ssl:
+    enable: false
+    key: none
+    cert: none
+  auth:
+    enable: true
+    method: 1
+    extras:
+      sign_key: cgZFMG5hHU1Ac3QK
+      issuer: cAlnKG9MNEFsUUJCSGwYKA==
+      expire: 1440
+  throttle:
+    enable: true
+    max_per_sec: 2
+    max_burst: 1
+    urls:
+      - /api/ping
+      - /api/v/ping
+
+wx:
+  appid: dW1GbFdPMwZCTU1eSzN4aFRcAQVAY0le
+  secret: XCRFNEBcEQdUO3QDSxpwbEJcFQZUc3RPSApkbFRcCQBATU4HSDRJNUNcFQk=
+encrypt:
+  code: ohCaptainmyCaptain
